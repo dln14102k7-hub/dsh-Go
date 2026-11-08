@@ -6,13 +6,16 @@ on:
       - '.github/workflows/build-vi-standalone.yml'
   workflow_dispatch:
 
+env:
+  FLUTTER_VERSION: 3.47.7
+  GRADLE_VERSION: 9.3.1
+  DSH_MAVEN_MIRRORS: "0"
+  TZ: Asia/Saigon
+
 jobs:
   build-vi-apk:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      FLUTTER_VERSION: 3.47.7
-      TZ: Asia/Saigon
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,7 +25,7 @@ jobs:
       - name: Giải nén và áp bản dịch Tiếng Việt (5.832 chuỗi)
         run: |
           cat << 'EOF_B64' | tr -d ' \n\r' | base64 -d | gunzip > /tmp/vi.patch
-            H4sIAP3p72oC/6y9bW9cx5Uw+N2/4jrAItK6TYl6sWR5EoUiJVEjkqLVlGxPnsBzu/uy+w677+3cF0o0wwcOjIE38AYZIxsMDI93
+            H4sIANru72oC/6y9bW9cx5Uw+N2/4jrAItK6TYl6sWR5EoUiJVEjkqLVlGxPnsBzu/uy+w677+3cF0o0wwcOjIE38AYZIxsMDI93
             LAtej+MITiIHgSUEAR56/HV/g/xg93dsnZeqOlW3brOZ2SCQSd46p95OnTrvda3IJ9FLZ85cOB/HZy+eOX/xwkvbZxdPv7zdj7df
             invbFwbb5146f/Hl5HyynUTreRZ1k2m0eCE6ffoS/j86c/r04nPXFJpL0Up3NbqeR3dvROPF01n0d/Dvi7vpj5L78WQ6ThbSbDce
             p4MfPrcSV8mlqFtnnehitJHvKiRnXopOn7109qVLZ05HL5y+cPr0c926909Jv7oU/XhzaWt59SeI9FIUDwbR3TSpsniSlEl0Yjc9
@@ -1402,26 +1405,18 @@ jobs:
           EOF_B64
           git apply --3way /tmp/vi.patch || git apply --whitespace=fix /tmp/vi.patch
 
-      - name: Lấy bộ Runtime Linux arm64 từ bản phát hành chính thức
+      - name: Lấy bộ Runtime Linux arm64 từ bản phát hành v1.0.13
         run: |
           mkdir -p runtime/out/arm64-v8a/assets runtime/out/arm64-v8a/jniLibs/arm64-v8a
-          REL_URL=$(curl -sL https://api.github.com/repos/ccch1mneyyy/dsh-Go/releases/latest             | python3 -c "import sys,json; d=json.load(sys.stdin); print(next(a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('-arm64.apk')))")
-          echo "Downloading official APK from $REL_URL"
-          curl -sL "$REL_URL" -o /tmp/official-arm64.apk
-          python3 - << 'PYEXTRACT'
-          import zipfile, os, shutil
-          z = zipfile.ZipFile('/tmp/official-arm64.apk')
-          for n in z.namelist():
-              if n.startswith('assets/runtime/'):
-                  dest = os.path.join('runtime/out/arm64-v8a', n)
-                  os.makedirs(os.path.dirname(dest), exist_ok=True)
-                  with z.open(n) as src, open(dest, 'wb') as dst:
-                      shutil.copyfileobj(src, dst)
-              elif n in ('lib/arm64-v8a/libproot.so','lib/arm64-v8a/libproot-loader.so','lib/arm64-v8a/libtalloc.so','lib/arm64-v8a/libandroid-shmem.so'):
-                  dest = os.path.join('runtime/out/arm64-v8a/jniLibs/arm64-v8a', os.path.basename(n))
-                  with z.open(n) as src, open(dest, 'wb') as dst:
-                      shutil.copyfileobj(src, dst)
-          PYEXTRACT
+          APK_URL="https://github.com/ccch1mneyyy/dsh-Go/releases/download/v1.0.13/dsh-go-1.0.13-arm64.apk"
+          curl -fSL --retry 3 "$APK_URL" -o /tmp/official-arm64.apk
+          unzip -q -o /tmp/official-arm64.apk 'assets/runtime/*' -d runtime/out/arm64-v8a
+          unzip -q -o -j /tmp/official-arm64.apk \
+            'lib/arm64-v8a/libproot.so' \
+            'lib/arm64-v8a/libproot-loader.so' \
+            'lib/arm64-v8a/libtalloc.so' \
+            'lib/arm64-v8a/libandroid-shmem.so' \
+            -d runtime/out/arm64-v8a/jniLibs/arm64-v8a
           rm -f /tmp/official-arm64.apk
           ls -lh runtime/out/arm64-v8a/assets/runtime/ runtime/out/arm64-v8a/jniLibs/arm64-v8a/
 
@@ -1438,12 +1433,22 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Sinh mã nguồn ngôn ngữ Tiếng Việt (gen-l10n)
+      - name: Cài đặt Gradle 9.3.1 & tạo gradlew
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Cấu hình Android SDK, local.properties và Sinh mã nguồn Tiếng Việt
         working-directory: app
         run: |
+          sed -i 's|https\\://mirrors.cloud.tencent.com/gradle/gradle-9.3.1-all.zip|https\\://services.gradle.org/distributions/gradle-9.3.1-bin.zip|g' android/gradle/wrapper/gradle-wrapper.properties
           flutter pub get
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
+          (cd android && gradle wrapper --gradle-version 9.3.1)
+          chmod +x android/gradlew
           python3 tool/l10n_merge.py --locale vi
           python3 tool/l10n_merge.py --check --locale vi
+          test -s lib/l10n/gen/app_localizations_vi.dart
 
       - name: Build APK Tiếng Việt (Bản chuẩn + Bản cài song song)
         run: |
@@ -1452,8 +1457,9 @@ jobs:
           ./tooling/build-apk.sh --release --flavor arm64
           cp app/build/app/outputs/flutter-apk/app-arm64-release.apk /tmp/apk-out/dsh-go-vi-arm64.apk
 
-          # Build thêm bản cài song song (id: io.github.ccch1mneyyy.dsh_app.vi) để không cần gỡ app cũ
+          # Build thêm bản cài song song (id: io.github.ccch1mneyyy.dsh_app.vi, tên: DSH Go VI)
           sed -i 's/applicationId = "io.github.ccch1mneyyy.dsh_app"/applicationId = "io.github.ccch1mneyyy.dsh_app.vi"/g' app/android/app/build.gradle.kts
+          sed -i 's/android:label="DSH Go"/android:label="DSH Go VI"/g' app/android/app/src/main/AndroidManifest.xml
           ./tooling/build-apk.sh --release --flavor arm64
           cp app/build/app/outputs/flutter-apk/app-arm64-release.apk /tmp/apk-out/dsh-go-vi-song-song-arm64.apk
           ls -lh /tmp/apk-out/
