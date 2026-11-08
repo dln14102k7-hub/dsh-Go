@@ -1,0 +1,77 @@
+# Build APK DSH Go giao diện tiếng Việt (locale "vi") trong FORK của bạn.
+#
+# Cách dùng (không cần máy tính có Flutter):
+#   1. Fork https://github.com/ccch1mneyyy/dsh-Go
+#   2. Trong fork: chép tệp này vào .github/workflows/build-vi.yml, commit, push nhánh.
+#   3. Tab Actions -> "DSH Go — build APK tiếng Việt" -> Run workflow -> chọn nhánh.
+#   4. Xong, tải artifact "dsh-go-vi-arm64" (zip chứa app-arm64-release.apk).
+#
+# LƯU Ý:
+#   - Repo gốc KHÔNG nhận PR từ bên ngoài (xem src/AGENTS.md + .github/workflows/pr-gate.yml).
+#     Workflow này để build trong fork của BẠN, không phải để mở PR.
+#   - Bắt buộc có bước `l10n_merge.py --locale vi`: nó merge 55 nhóm chuỗi và gọi
+#     `flutter gen-l10n`, sinh ra lib/l10n/gen/ có tiếng Việt. Không build thẳng khi chưa chạy.
+#   - Không commit tay thư mục lib/l10n/gen/.
+name: DSH Go — build APK tiếng Việt
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, l10n/vi]
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: APK arm64 (vi)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Lấy mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Cài Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cài Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Phiên bản công cụ
+        run: |
+          flutter --version
+          python3 --version
+
+      - name: Tải gói phụ thuộc
+        working-directory: app
+        run: flutter pub get
+
+      - name: Sinh bản địa hóa (zh, en, vi) + gen-l10n
+        run: python3 app/tool/l10n_merge.py --locale vi
+
+      - name: Kiểm tra bản địa hóa
+        run: |
+          python3 app/tool/l10n_merge.py --check --locale vi
+          test -s app/lib/l10n/gen/app_localizations_vi.dart
+          echo "vi locale đã được sinh."
+
+      - name: Build APK (arm64, release)
+        run: ./tooling/build-apk.sh --release --flavor arm64
+
+      # Nếu script trên lỗi (ví dụ môi trường Gradle khác), dùng lệnh Flutter trực tiếp:
+      #   (cd app && flutter build apk --release --flavor arm64 --target-platform android-arm64)
+
+      - name: Đưa APK lên artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-go-vi-arm64
+          path: app/build/app/outputs/flutter-apk/app-arm64-release.apk
+          if-no-files-found: error
+          retention-days: 14
